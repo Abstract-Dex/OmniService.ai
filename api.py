@@ -3,9 +3,28 @@ OmniService API — FastAPI server with a single streaming chat endpoint.
 
 Run:
     uvicorn api:app --reload --port 8000
+
+LangSmith tracing:
+    Set these in your .env to enable full pipeline tracing:
+        LANGCHAIN_TRACING_V2=true
+        LANGCHAIN_API_KEY=lsv2_...
+        LANGCHAIN_PROJECT=OmniService
 """
 
 from __future__ import annotations
+
+import os
+import logging
+import asyncio
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Enable LangSmith tracing if API key is present
+if os.getenv("LANGCHAIN_API_KEY"):
+    os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    os.environ.setdefault("LANGCHAIN_PROJECT", "OmniService")
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +32,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from modules.agent import build_graph, astream_answer
+
+logger = logging.getLogger("omniservice.api")
+
 
 # ── App & graph ──────────────────────────────────────────────────────
 
@@ -41,6 +63,7 @@ class ChatRequest(BaseModel):
     model_number: str
     problem_description: str
     messages: list[Message]
+    web_search: bool = False    # user toggles "search the web" in the UI
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────
@@ -70,6 +93,7 @@ async def chat(req: ChatRequest, request: Request):
                 model_id=req.model_number,
                 problem_description=req.problem_description,
                 user_message=user_message,
+                web_search=req.web_search,
                 thread_id=req.project_id,
             ):
                 # Stop generating if the client disconnected
@@ -77,9 +101,12 @@ async def chat(req: ChatRequest, request: Request):
                     break
                 yield f"{token}"
             yield "[DONE]"
-        except Exception:
-            # Client abort / cancellation — exit cleanly
+        except asyncio.CancelledError:
+            # Client disconnected — exit cleanly
             return
+        except Exception as exc:
+            logger.exception("Error during streaming: %s", exc)
+            yield f"[ERROR] {exc}"
 
     return StreamingResponse(
         event_stream(),

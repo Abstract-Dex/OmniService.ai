@@ -90,20 +90,38 @@ Below are the knowledge-base results for model "{model_id}".
 ── Graph context (structured model data) ──
 {graph_context}
 
+{web_section}
 Using the above context, answer the technician's question.
 """
 
+# Injected into SYNTHESIZER_CONTEXT only when web_search was enabled
+SYNTHESIZER_WEB_SECTION = """\
+── Web search results ──
+{web_results}
+"""
 
-# ── External search prompt (placeholder for Phase 2 expansion) ──
 
-EXTERNAL_SEARCH_SYSTEM = """\
+# ── Web search node prompt ──
+
+WEB_SEARCH_SYSTEM = """\
 {identity}
 
-You are the EXTERNAL SEARCH stage.  The knowledge base did not have enough
-information, so the planner decided to search the web.
+You are the WEB SEARCH stage.  The user has enabled web search for extra context.
 
-Summarise the external search results into a concise, technician-friendly
-answer.  Cite sources (URLs) where possible.
+You have already received knowledge-base results for model "{model_id}":
+- Problem: {problem_description}
+- User question: {user_message}
+
+Your ONLY job is to call the `web_search_tool` with a single, well-crafted
+search query that will supplement the knowledge base.  Think about what
+information the KB is missing and search for that specifically.
+
+Good queries are specific and technical, e.g.:
+- "CPB050JC compressor short cycling troubleshooting guide"
+- "R449A refrigerant pressure temperature chart"
+- "Heatcraft condensing unit similar models comparison"
+
+Call the tool exactly ONCE.  Do NOT output any other text.
 """
 
 

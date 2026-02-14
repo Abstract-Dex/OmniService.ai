@@ -53,7 +53,8 @@ def ingest_data(data_path: str):
         # Derive expected model_id from filename (e.g. "Model-CPB050JC-S-0-EV" -> "CPB050JC-S-0-EV")
         expected_model_id = model_name.replace("Model-", "", 1)
         if is_model_in_graph(expected_model_id):
-            print(f"  [=] {expected_model_id} already in Neo4j — skipping LLM parse")
+            print(
+                f"  [=] {expected_model_id} already in Neo4j — skipping LLM parse")
             graph_ok += 1
             print()
             continue

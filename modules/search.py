@@ -22,7 +22,10 @@ from weaviate.classes.query import MetadataQuery, Filter
 from neo4j import Query
 from modules.graph_store import get_driver
 from modules.vector_ingest import COLLECTION_NAME, COLLECTION_PROPERTIES
+from langchain_community.tools import DuckDuckGoSearchRun
+from langsmith import traceable  # type: ignore[import-untyped]
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
@@ -57,6 +60,7 @@ def _get_or_create_collection(client, collection_name: str = COLLECTION_NAME):
 
 # ── Embedding ──
 
+@traceable(name="cohere_embed_query", tags=["embedding", "cohere", "omniservice"])
 def _embed_query(query: str) -> list[float]:
     """Embed a search query using Cohere embed-v4.0 (search_query mode)."""
     response = co.embed(
@@ -70,6 +74,7 @@ def _embed_query(query: str) -> list[float]:
 
 # ── Vector search (Weaviate) ──
 
+@traceable(name="weaviate_hybrid_search", tags=["vector_search", "weaviate", "omniservice"])
 def _hybrid_search(model_id: str, query: str, limit: int = 8) -> list:
     """
     Run a hybrid (BM25 + vector) search on Weaviate, filtered by model_id.
@@ -94,6 +99,7 @@ def _hybrid_search(model_id: str, query: str, limit: int = 8) -> list:
         client.close()
 
 
+@traceable(name="cohere_rerank", tags=["rerank", "cohere", "omniservice"])
 def _rerank(query: str, objects, top_n: int = 3) -> dict:
     """
     Rerank hybrid search results via Cohere rerank-v4.0-pro.
@@ -132,6 +138,7 @@ def _rerank(query: str, objects, top_n: int = 3) -> dict:
 
 # ── Graph search (Neo4j) ──
 
+@traceable(name="neo4j_graph_fetch", tags=["graph_search", "neo4j", "omniservice"])
 def _fetch_model_graph(model_id: str, max_hops: int = 3) -> dict:
     """
     Fetch the full subgraph for a model from Neo4j.
@@ -175,6 +182,7 @@ def _fetch_model_graph(model_id: str, max_hops: int = 3) -> dict:
 
 # ── Combined search ──
 
+@traceable(name="search_knowledge_base", tags=["kb_search", "omniservice"])
 def search_knowledge_base(
     model_id: str,
     problem_description: str,
@@ -223,15 +231,21 @@ def search_knowledge_base(
     return payload
 
 
-# if __name__ == "__main__":
-#     import argparse
+@traceable(name="duckduckgo_external_search", tags=["web_search", "duckduckgo", "omniservice"])
+def external_search(query: str) -> str:
+    """Search the web using DuckDuckGo and return results as a string."""
+    search_client = DuckDuckGoSearchRun()
+    return search_client.invoke(query)
 
-#     parser = argparse.ArgumentParser(description="Search the knowledge base")
-#     parser.add_argument("--model", "-m", type=str, required=True,
-#                         help="Model ID to search for")
-#     parser.add_argument("--query", "-q", type=str, required=True,
-#                         help="Problem description / search query")
-#     args = parser.parse_args()
 
-#     result = search_knowledge_base(args.model, args.query)
-#     print(json.dumps(result, ensure_ascii=False, indent=2))
+# LangChain tool wrapper — used by the web_search_node so the LLM
+# can craft its own query via tool-calling.
+from langchain_core.tools import tool as langchain_tool  # noqa: E402
+
+
+@langchain_tool
+def web_search_tool(query: str) -> str:
+    """Search the web for HVAC/R technical information, product specs,
+    refrigerant data, OEM bulletins, or anything not in the local
+    knowledge base.  Provide a specific, descriptive search query."""
+    return external_search(query)
