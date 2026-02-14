@@ -1,0 +1,11 @@
+.venv
+.env
+.DS_Store
+__pycache__/
+uv.lock
+docs
+.python-version
+.ipynb_checkpoints/
+*.ipynb
+.cursor/
+Data/
