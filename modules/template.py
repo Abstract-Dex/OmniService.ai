@@ -84,6 +84,8 @@ Formatting (your output will be rendered as markdown by the frontend):
 SYNTHESIZER_CONTEXT = """\
 Below are the knowledge-base results for model "{model_id}".
 
+{preferences_section}
+
 ── Vector search results (ranked by relevance) ──
 {vector_results}
 
@@ -92,6 +94,15 @@ Below are the knowledge-base results for model "{model_id}".
 
 {web_section}
 Using the above context, answer the technician's question.
+"""
+
+# Injected into SYNTHESIZER_CONTEXT when user preferences are available
+SYNTHESIZER_PREFERENCES_SECTION = """\
+── Technician preferences (inferred from prior chats) ──
+{user_preferences}
+
+Use these preferences only for style and formatting.
+Do not change technical facts, part numbers, or safety rules based on preferences.
 """
 
 # Injected into SYNTHESIZER_CONTEXT only when web_search was enabled

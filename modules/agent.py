@@ -41,6 +41,7 @@ from modules.template import (
     PLANNER_USER,
     SYNTHESIZER_SYSTEM,
     SYNTHESIZER_CONTEXT,
+    SYNTHESIZER_PREFERENCES_SECTION,
     SYNTHESIZER_WEB_SECTION,
     WEB_SEARCH_SYSTEM,
     format_prompt,
@@ -55,11 +56,28 @@ from langchain_core.runnables import RunnableConfig
 
 import json
 import logging
+import os
 import uuid
-from typing import TypedDict, Annotated, AsyncGenerator, Generator
+from typing import TypedDict, Annotated, AsyncGenerator, Generator, Any
 from operator import add
 
 logger = logging.getLogger("omniservice.agent")
+
+try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+except Exception:
+    SqliteSaver = None  # type: ignore[assignment]
+
+try:
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+except Exception:
+    AsyncSqliteSaver = None  # type: ignore[assignment]
+
+_SQLITE_CHECKPOINTER_CM: Any | None = None
+_SQLITE_CHECKPOINTER: Any | None = None
+_ASYNC_SQLITE_CHECKPOINTER_CM: Any | None = None
+_ASYNC_SQLITE_CHECKPOINTER: Any | None = None
+_ASYNC_GRAPH: Any | None = None
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -90,6 +108,8 @@ class AgentState(TypedDict):
     model_id: str                           # equipment model extracted by the planner
     # concise restatement of the technician's problem
     problem_description: str
+    user_id: str
+    user_preferences: dict
     plan: dict                              # planner JSON output
     tool_results: dict                      # raw results from KB / external search
     # whether to also search the web (frontend toggle)
@@ -273,6 +293,7 @@ def synthesizer_node(state: AgentState) -> dict:
 
     # Build context block from tool results
     tr = state.get("tool_results", {})
+    user_preferences = state.get("user_preferences", {})
     vector_results = json.dumps(
         tr.get("vector_results", {}), indent=2, default=str,
     )
@@ -291,9 +312,18 @@ def synthesizer_node(state: AgentState) -> dict:
     else:
         web_section = ""
 
+    if user_preferences:
+        preferences_section = format_prompt(
+            SYNTHESIZER_PREFERENCES_SECTION,
+            user_preferences=json.dumps(user_preferences, indent=2, default=str),
+        )
+    else:
+        preferences_section = ""
+
     context_msg = format_prompt(
         SYNTHESIZER_CONTEXT,
         model_id=state.get("model_id", "unknown"),
+        preferences_section=preferences_section,
         vector_results=vector_results,
         graph_context=graph_context,
         web_section=web_section,
@@ -353,8 +383,26 @@ def build_graph(checkpointer=None):
     Returns:
         A compiled ``StateGraph`` ready for ``.invoke()`` / ``.stream()``.
     """
+    global _SQLITE_CHECKPOINTER_CM, _SQLITE_CHECKPOINTER
+
     if checkpointer is None:
-        checkpointer = InMemorySaver()
+        checkpoint_path = os.getenv("LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+        if SqliteSaver is not None:
+            # from_conn_string returns a context manager; keep it open
+            # for the process lifetime so the saver remains usable.
+            if _SQLITE_CHECKPOINTER is None:
+                _SQLITE_CHECKPOINTER_CM = SqliteSaver.from_conn_string(checkpoint_path)
+                _SQLITE_CHECKPOINTER = _SQLITE_CHECKPOINTER_CM.__enter__()
+            checkpointer = _SQLITE_CHECKPOINTER
+        else:
+            logger.warning(
+                "langgraph-checkpoint-sqlite not available; using InMemorySaver fallback."
+            )
+            checkpointer = InMemorySaver()
 
     builder = StateGraph(AgentState)
 
@@ -374,6 +422,54 @@ def build_graph(checkpointer=None):
     return builder.compile(checkpointer=checkpointer)
 
 
+async def get_async_graph(checkpointer=None):
+    """Construct and cache an async-compiled graph for async streaming.
+
+    Uses ``AsyncSqliteSaver`` when available so ``graph.astream(...)`` and
+    related async graph methods run with an async checkpointer.
+    """
+    global _ASYNC_SQLITE_CHECKPOINTER_CM, _ASYNC_SQLITE_CHECKPOINTER, _ASYNC_GRAPH
+
+    if _ASYNC_GRAPH is not None and checkpointer is None:
+        return _ASYNC_GRAPH
+
+    if checkpointer is None:
+        checkpoint_path = os.getenv("LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+
+        if AsyncSqliteSaver is not None:
+            # from_conn_string returns an async context manager; keep it open
+            # for process lifetime so the saver remains usable.
+            if _ASYNC_SQLITE_CHECKPOINTER is None:
+                _ASYNC_SQLITE_CHECKPOINTER_CM = AsyncSqliteSaver.from_conn_string(
+                    checkpoint_path,
+                )
+                _ASYNC_SQLITE_CHECKPOINTER = await _ASYNC_SQLITE_CHECKPOINTER_CM.__aenter__()
+            checkpointer = _ASYNC_SQLITE_CHECKPOINTER
+        else:
+            logger.warning(
+                "AsyncSqliteSaver not available; using sync graph/checkpointer fallback.",
+            )
+            return build_graph()
+
+    builder = StateGraph(AgentState)
+    builder.add_node("planner", planner_node)
+    builder.add_node("executor", executor_node)
+    builder.add_node("web_search", web_search_node)
+    builder.add_node("synthesizer", synthesizer_node)
+    builder.add_edge(START, "planner")
+    builder.add_edge("planner", "executor")
+    builder.add_conditional_edges("executor", _route_after_executor)
+    builder.add_edge("web_search", "synthesizer")
+    builder.add_edge("synthesizer", END)
+    compiled = builder.compile(checkpointer=checkpointer)
+    if checkpointer is _ASYNC_SQLITE_CHECKPOINTER:
+        _ASYNC_GRAPH = compiled
+    return compiled
+
+
 # ────────────────────────────────────────────────────────────────────
 # Convenience helpers
 # ────────────────────────────────────────────────────────────────────
@@ -382,6 +478,7 @@ def _make_config(
     thread_id: str | None = None,
     *,
     model_id: str = "",
+    user_id: str = "",
     web_search: bool = False,
 ) -> dict:
     """Build a LangGraph config dict with a thread_id for persistence.
@@ -403,6 +500,7 @@ def _make_config(
         "metadata": {
             "thread_id": thread_id,
             "model_id": model_id,
+            "user_id": user_id,
             "web_search": web_search,
         },
     }
@@ -414,6 +512,8 @@ def stream_answer(
     model_id: str,
     problem_description: str,
     user_message: str,
+    user_id: str = "",
+    user_preferences: dict[str, Any] | None = None,
     web_search: bool = False,
     thread_id: str | None = None,
 ) -> Generator[str, None, None]:
@@ -433,11 +533,18 @@ def stream_answer(
     Yields:
         str: individual token strings from the synthesizer LLM.
     """
-    config = _make_config(thread_id, model_id=model_id, web_search=web_search)
+    config = _make_config(
+        thread_id,
+        model_id=model_id,
+        user_id=user_id,
+        web_search=web_search,
+    )
     inputs = {
         "messages": [HumanMessage(content=user_message)],
         "model_id": model_id,
         "problem_description": problem_description,
+        "user_id": user_id,
+        "user_preferences": user_preferences or {},
         "web_search": web_search,
         "tool_results": {},
         "plan": {},
@@ -465,6 +572,8 @@ async def astream_answer(
     model_id: str,
     problem_description: str,
     user_message: str,
+    user_id: str = "",
+    user_preferences: dict[str, Any] | None = None,
     web_search: bool = False,
     thread_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -477,11 +586,18 @@ async def astream_answer(
     Yields:
         str: individual token strings from the synthesizer LLM.
     """
-    config = _make_config(thread_id, model_id=model_id, web_search=web_search)
+    config = _make_config(
+        thread_id,
+        model_id=model_id,
+        user_id=user_id,
+        web_search=web_search,
+    )
     inputs = {
         "messages": [HumanMessage(content=user_message)],
         "model_id": model_id,
         "problem_description": problem_description,
+        "user_id": user_id,
+        "user_preferences": user_preferences or {},
         "web_search": web_search,
         "tool_results": {},
         "plan": {},
@@ -507,6 +623,8 @@ def invoke_answer(
     model_id: str,
     problem_description: str,
     user_message: str,
+    user_id: str = "",
+    user_preferences: dict[str, Any] | None = None,
     web_search: bool = False,
     thread_id: str | None = None,
 ) -> str:
@@ -523,11 +641,18 @@ def invoke_answer(
     Returns:
         The synthesizer's complete answer text.
     """
-    config = _make_config(thread_id, model_id=model_id, web_search=web_search)
+    config = _make_config(
+        thread_id,
+        model_id=model_id,
+        user_id=user_id,
+        web_search=web_search,
+    )
     inputs = {
         "messages": [HumanMessage(content=user_message)],
         "model_id": model_id,
         "problem_description": problem_description,
+        "user_id": user_id,
+        "user_preferences": user_preferences or {},
         "web_search": web_search,
         "tool_results": {},
         "plan": {},

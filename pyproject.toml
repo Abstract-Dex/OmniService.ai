@@ -5,6 +5,7 @@ description = "Agentic System for Service AI"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "aiosqlite>=0.22.1",
     "anthropic>=0.79.0",
     "cohere>=5.20.4",
     "ddgs>=9.10.0",
@@ -15,6 +16,7 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-core>=1.2.12",
     "langgraph>=1.0.8",
+    "langgraph-checkpoint-sqlite>=3.0.3",
     "langsmith>=0.7.3",
     "neo4j>=6.1.0",
     "pdfplumber>=0.11.9",

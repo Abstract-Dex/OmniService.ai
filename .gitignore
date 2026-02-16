@@ -9,3 +9,4 @@ docs
 *.ipynb
 .cursor/
 Data/
+.data/
