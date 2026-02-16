@@ -108,7 +108,8 @@ async def chat(req: ChatRequest, request: Request):
         model_id=req.model_number,
         problem_description=req.problem_description,
         create_if_missing=True,
-        allow_join_existing=False,
+        # Handoff: if project exists and user is new, join project membership.
+        allow_join_existing=True,
     )
     if project_meta.get("status") == "forbidden":
         raise HTTPException(
@@ -176,7 +177,8 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
         project_id,
         user_id,
         create_if_missing=False,
-        allow_join_existing=False,
+        # Handoff: opening history can attach a new technician to the project.
+        allow_join_existing=True,
     )
     status = access.get("status")
     if status == "not_found":

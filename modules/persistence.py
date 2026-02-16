@@ -65,7 +65,8 @@ def init_state_db() -> None:
             row["name"] for row in conn.execute("PRAGMA table_info('projects')").fetchall()
         }
         if "model_id" not in project_columns:
-            conn.execute("ALTER TABLE projects ADD COLUMN model_id TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN model_id TEXT NOT NULL DEFAULT ''")
         if "problem_description" not in project_columns:
             conn.execute(
                 "ALTER TABLE projects ADD COLUMN problem_description TEXT NOT NULL DEFAULT ''"
@@ -224,7 +225,8 @@ def touch_project(
                         problem_description = COALESCE(NULLIF(?, ''), problem_description)
                     WHERE project_id = ?
                     """,
-                    (now, (model_id or "").strip(), (problem_description or "").strip(), project_id),
+                    (now, (model_id or "").strip(),
+                     (problem_description or "").strip(), project_id),
                 )
                 conn.execute(
                     """
@@ -252,7 +254,8 @@ def touch_project(
                         problem_description = COALESCE(NULLIF(?, ''), problem_description)
                     WHERE project_id = ?
                     """,
-                    (now, (model_id or "").strip(), (problem_description or "").strip(), project_id),
+                    (now, (model_id or "").strip(),
+                     (problem_description or "").strip(), project_id),
                 )
             else:
                 return {
@@ -267,7 +270,8 @@ def touch_project(
     project["created"] = created
     project["resumed"] = resumed
     project["joined"] = joined
-    project["status"] = "created" if created else ("resumed" if resumed else ("joined" if joined else "ok"))
+    project["status"] = "created" if created else (
+        "resumed" if resumed else ("joined" if joined else "ok"))
     return project
 
 
@@ -388,7 +392,8 @@ def _delete_thread_from_checkpoint_db(project_id: str) -> dict[str, int]:
 
         for table in tables:
             table_name = table["name"]
-            cols = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+            cols = conn.execute(
+                f"PRAGMA table_info('{table_name}')").fetchall()
             col_names = {c["name"] for c in cols}
             if "thread_id" not in col_names:
                 continue
@@ -435,8 +440,10 @@ def delete_project(project_id: str, user_id: str) -> dict[str, Any]:
         if membership is None:
             return {"status": "forbidden", "project_id": project_id, "user_id": user_id}
 
-        conn.execute("DELETE FROM project_users WHERE project_id = ?", (project_id,))
-        conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+        conn.execute(
+            "DELETE FROM project_users WHERE project_id = ?", (project_id,))
+        conn.execute(
+            "DELETE FROM projects WHERE project_id = ?", (project_id,))
         conn.commit()
 
     checkpoint_cleanup = _delete_thread_from_checkpoint_db(project_id)
