@@ -14,6 +14,7 @@ Pipeline position:
 """
 
 import warnings
+import os
 import weaviate
 from weaviate.classes.config import Configure, Property, DataType
 import json
@@ -44,7 +45,27 @@ COLLECTION_PROPERTIES = [
 # ── Weaviate helpers ──
 
 def get_weaviate_client():
-    """Connect to the local Weaviate instance (Docker)."""
+    """Connect to Weaviate Cloud when env vars are present, else local Docker.
+
+    Expected env vars for cloud:
+      - WEAVIATE_URL (or WEAVIATE_REST_ENDPOINT)
+      - WEAVIATE_API_KEY
+    """
+    weaviate_url = os.getenv("WEAVIATE_URL") or os.getenv("WEAVIATE_REST_ENDPOINT")
+    weaviate_api_key = os.getenv("WEAVIATE_API_KEY")
+
+    if weaviate_url:
+        if not weaviate_api_key:
+            raise ValueError(
+                "WEAVIATE_URL is set but WEAVIATE_API_KEY is missing. "
+                "Set both for Weaviate Cloud access.",
+            )
+        return weaviate.connect_to_weaviate_cloud(
+            cluster_url=weaviate_url,
+            auth_credentials=weaviate_api_key,
+        )
+
+    # Local dev fallback
     return weaviate.connect_to_local()
 
 

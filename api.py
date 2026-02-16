@@ -27,6 +27,7 @@ from modules.agent import astream_answer, build_graph, get_async_graph
 from modules.persistence import (
     delete_project,
     get_project,
+    list_projects_for_user,
     get_user_preferences,
     infer_and_update_user_preferences,
     init_state_db,
@@ -100,7 +101,17 @@ async def chat(req: ChatRequest, request: Request):
         raise HTTPException(status_code=400, detail="No user message found in request.messages")
 
     # Project routing: create if missing, resume if existing.
-    project_meta = touch_project(req.project_id, req.user_id)
+    project_meta = touch_project(
+        req.project_id,
+        req.user_id,
+        create_if_missing=True,
+        allow_join_existing=False,
+    )
+    if project_meta.get("status") == "forbidden":
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{req.user_id}' is not allowed to access project '{req.project_id}'",
+        )
     user_preferences = get_user_preferences(req.user_id)
     logger.info(
         "Project %s (%s) for user %s",
@@ -158,8 +169,14 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
 
     If the project exists, the user is associated to the project for handoff.
     """
-    project = get_project(project_id)
-    if project is None:
+    access = touch_project(
+        project_id,
+        user_id,
+        create_if_missing=False,
+        allow_join_existing=False,
+    )
+    status = access.get("status")
+    if status == "not_found":
         return {
             "project_id": project_id,
             "exists": False,
@@ -168,8 +185,11 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
             "problem_description": "",
             "users": [],
         }
-
-    touch_project(project_id, user_id)
+    if status == "forbidden":
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{user_id}' is not allowed to view project '{project_id}'",
+        )
     snapshot = graph.get_state({"configurable": {"thread_id": project_id}})
     values = snapshot.values if getattr(snapshot, "values", None) else {}
     messages = values.get("messages", [])
@@ -181,7 +201,7 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
         elif isinstance(msg, AIMessage):
             serialized.append({"role": "assistant", "content": str(msg.content)})
 
-    latest_project = get_project(project_id) or project
+    latest_project = get_project(project_id) or access
     return {
         "project_id": project_id,
         "exists": True,
@@ -189,6 +209,15 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
         "problem_description": values.get("problem_description", ""),
         "messages": serialized,
         "users": [u["user_id"] for u in latest_project.get("users", [])],
+    }
+
+
+@app.get("/api/projects")
+async def projects_for_user(user_id: str = Query(..., min_length=1)):
+    """List only projects associated with the provided user_id."""
+    return {
+        "user_id": user_id,
+        "projects": list_projects_for_user(user_id),
     }
 
 

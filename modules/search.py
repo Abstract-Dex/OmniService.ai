@@ -20,8 +20,8 @@ import cohere
 from weaviate.classes.config import Configure
 from weaviate.classes.query import MetadataQuery, Filter
 from neo4j import Query
-from modules.graph_store import get_driver
-from modules.vector_ingest import COLLECTION_NAME, COLLECTION_PROPERTIES
+from modules.graph_store import get_driver, get_session_kwargs
+from modules.vector_ingest import COLLECTION_NAME, COLLECTION_PROPERTIES, get_weaviate_client
 from langchain_community.tools import DuckDuckGoSearchRun
 from langsmith import traceable  # type: ignore[import-untyped]
 from dotenv import load_dotenv
@@ -39,8 +39,8 @@ co = cohere.ClientV2()
 # ── Weaviate helpers ──
 
 def _get_weaviate_client():
-    """Connect to the local Weaviate instance."""
-    return weaviate.connect_to_local()
+    """Reuse shared Weaviate connector (cloud via env, else local)."""
+    return get_weaviate_client()
 
 
 def _get_or_create_collection(client, collection_name: str = COLLECTION_NAME):
@@ -157,7 +157,7 @@ def _fetch_model_graph(model_id: str, max_hops: int = 3) -> dict:
 
     driver = get_driver()
     try:
-        with driver.session() as session:
+        with driver.session(**get_session_kwargs()) as session:
             result = session.run(cypher, model_id=model_id)
 
             node_map = {}

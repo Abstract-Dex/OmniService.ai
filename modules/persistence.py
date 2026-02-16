@@ -108,17 +108,45 @@ def get_project(project_id: str) -> dict[str, Any] | None:
         }
 
 
-def touch_project(project_id: str, user_id: str) -> dict[str, Any]:
+def list_projects_for_user(user_id: str) -> list[dict[str, Any]]:
+    """Return projects associated with a given user_id."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.project_id, p.created_at, p.updated_at, pu.last_seen_at
+            FROM projects p
+            INNER JOIN project_users pu ON pu.project_id = p.project_id
+            WHERE pu.user_id = ?
+            ORDER BY p.updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def touch_project(
+    project_id: str,
+    user_id: str,
+    *,
+    create_if_missing: bool = True,
+    allow_join_existing: bool = False,
+) -> dict[str, Any]:
     """
     Upsert project and register user access.
 
     Behavior:
-        - create project if missing
-        - otherwise keep project and update last activity
-        - ensure user is linked to project in project_users
+        - if missing:
+            - create project when create_if_missing=True
+            - return not_found when create_if_missing=False
+        - if existing:
+            - resume when user is already linked
+            - optionally join when allow_join_existing=True
+            - otherwise return forbidden
     """
     now = _now_iso()
     created = False
+    resumed = False
+    joined = False
 
     with _connect() as conn:
         row = conn.execute(
@@ -126,31 +154,75 @@ def touch_project(project_id: str, user_id: str) -> dict[str, Any]:
             (project_id,),
         ).fetchone()
         if row is None:
+            if not create_if_missing:
+                return {
+                    "status": "not_found",
+                    "project_id": project_id,
+                    "user_id": user_id,
+                }
             conn.execute(
                 "INSERT INTO projects(project_id, created_at, updated_at) VALUES (?, ?, ?)",
                 (project_id, now, now),
             )
             created = True
-        else:
             conn.execute(
-                "UPDATE projects SET updated_at = ? WHERE project_id = ?",
-                (now, project_id),
+                """
+                INSERT INTO project_users(project_id, user_id, joined_at, last_seen_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (project_id, user_id, now, now),
             )
-
-        conn.execute(
-            """
-            INSERT INTO project_users(project_id, user_id, joined_at, last_seen_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(project_id, user_id)
-            DO UPDATE SET last_seen_at = excluded.last_seen_at
-            """,
-            (project_id, user_id, now, now),
-        )
+        else:
+            membership = conn.execute(
+                """
+                SELECT 1
+                FROM project_users
+                WHERE project_id = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if membership is not None:
+                resumed = True
+                conn.execute(
+                    "UPDATE projects SET updated_at = ? WHERE project_id = ?",
+                    (now, project_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE project_users
+                    SET last_seen_at = ?
+                    WHERE project_id = ? AND user_id = ?
+                    """,
+                    (now, project_id, user_id),
+                )
+            elif allow_join_existing:
+                joined = True
+                conn.execute(
+                    """
+                    INSERT INTO project_users(project_id, user_id, joined_at, last_seen_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (project_id, user_id, now, now),
+                )
+                conn.execute(
+                    "UPDATE projects SET updated_at = ? WHERE project_id = ?",
+                    (now, project_id),
+                )
+            else:
+                return {
+                    "status": "forbidden",
+                    "project_id": project_id,
+                    "user_id": user_id,
+                }
         conn.commit()
 
     project = get_project(project_id) or {
         "project_id": project_id, "users": []}
     project["created"] = created
+    project["resumed"] = resumed
+    project["joined"] = joined
+    project["status"] = "created" if created else ("resumed" if resumed else ("joined" if joined else "ok"))
     return project
 
 

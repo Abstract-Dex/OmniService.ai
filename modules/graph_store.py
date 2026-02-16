@@ -22,15 +22,23 @@ from modules.scheme import UnifiedModel
 
 load_dotenv()
 
-# Neo4j connection settings (override via .env if needed)
-NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "omniservice")
+# Neo4j connection settings (supports both internal + downloaded Aura names)
+NEO4J_URI = os.getenv("NEO4J_URI") or os.getenv("NEO4J_URL") or "neo4j://localhost:7687"
+NEO4J_USER = os.getenv("NEO4J_USER") or os.getenv("neo4j_username") or "neo4j"
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD") or os.getenv("neo4j_password") or "omniservice"
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE") or os.getenv("neo4j_database")
 
 
 def get_driver():
     """Create and return a Neo4j driver instance."""
     return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+
+
+def get_session_kwargs() -> dict:
+    """Return session kwargs with optional database for Aura compatibility."""
+    if NEO4J_DATABASE:
+        return {"database": NEO4J_DATABASE}
+    return {}
 
 
 # ── Pre-check ──
@@ -44,7 +52,7 @@ def is_model_in_graph(model_id: str) -> bool:
     """
     driver = get_driver()
     try:
-        with driver.session() as session:
+        with driver.session(**get_session_kwargs()) as session:
             record = session.run(
                 "MATCH (m:Model {model_id: $mid}) RETURN count(m) > 0 AS exists",
                 mid=model_id
@@ -71,7 +79,7 @@ def ingest_model(driver, model: dict) -> bool:
     model_id = model["model_id"]
 
     try:
-        with driver.session() as session:
+        with driver.session(**get_session_kwargs()) as session:
 
             # Create the root Model node
             session.run(
@@ -181,7 +189,7 @@ def create_shared_part_links(driver):
     This enables cross-model queries like:
     "Which other models use Norlake #154111?"
     """
-    with driver.session() as session:
+    with driver.session(**get_session_kwargs()) as session:
         result = session.run("""
             MATCH (c1:Component), (c2:Component)
             WHERE c1.part_number = c2.part_number
@@ -199,7 +207,7 @@ def create_shared_part_links(driver):
 
 def delete_model(driver, model_id: str):
     """Delete a single model and ALL its related nodes (cascade)."""
-    with driver.session() as session:
+    with driver.session(**get_session_kwargs()) as session:
         session.run(
             "MATCH (n {model_id: $model_id}) DETACH DELETE n", model_id=model_id)
         print(f"  [ok] Deleted {model_id}")
@@ -207,7 +215,7 @@ def delete_model(driver, model_id: str):
 
 def delete_all(driver):
     """Delete every node and relationship in the database."""
-    with driver.session() as session:
+    with driver.session(**get_session_kwargs()) as session:
         result = session.run(
             "MATCH (n) DETACH DELETE n RETURN count(n) as deleted")
         record = result.single()
@@ -244,7 +252,7 @@ def ingest_sbom(parsed_manual: UnifiedModel, skip_existing: bool = False) -> boo
 
         # Check if model is already in the graph
         if skip_existing:
-            with driver.session() as session:
+            with driver.session(**get_session_kwargs()) as session:
                 record = session.run(
                     "MATCH (m:Model {model_id: $mid}) RETURN count(m) > 0 as e", mid=model_id
                 ).single()
