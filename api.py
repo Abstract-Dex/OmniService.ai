@@ -98,12 +98,15 @@ async def chat(req: ChatRequest, request: Request):
             break
 
     if not user_message:
-        raise HTTPException(status_code=400, detail="No user message found in request.messages")
+        raise HTTPException(
+            status_code=400, detail="No user message found in request.messages")
 
     # Project routing: create if missing, resume if existing.
     project_meta = touch_project(
         req.project_id,
         req.user_id,
+        model_id=req.model_number,
+        problem_description=req.problem_description,
         create_if_missing=True,
         allow_join_existing=False,
     )
@@ -199,14 +202,18 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
         if isinstance(msg, HumanMessage):
             serialized.append({"role": "user", "content": str(msg.content)})
         elif isinstance(msg, AIMessage):
-            serialized.append({"role": "assistant", "content": str(msg.content)})
+            serialized.append(
+                {"role": "assistant", "content": str(msg.content)})
 
     latest_project = get_project(project_id) or access
     return {
         "project_id": project_id,
         "exists": True,
-        "model_id": values.get("model_id", ""),
-        "problem_description": values.get("problem_description", ""),
+        "model_id": values.get("model_id", latest_project.get("model_id", "")),
+        "problem_description": values.get(
+            "problem_description", latest_project.get(
+                "problem_description", "")
+        ),
         "messages": serialized,
         "users": [u["user_id"] for u in latest_project.get("users", [])],
     }
@@ -237,7 +244,8 @@ async def project_delete(project_id: str, user_id: str = Query(..., min_length=1
     status = result.get("status")
 
     if status == "not_found":
-        raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Project '{project_id}' not found")
     if status == "forbidden":
         raise HTTPException(
             status_code=403,

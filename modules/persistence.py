@@ -53,11 +53,23 @@ def init_state_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS projects (
                 project_id TEXT PRIMARY KEY,
+                model_id TEXT NOT NULL DEFAULT '',
+                problem_description TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        # Backward-compatible migration for existing deployments.
+        project_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info('projects')").fetchall()
+        }
+        if "model_id" not in project_columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN model_id TEXT NOT NULL DEFAULT ''")
+        if "problem_description" not in project_columns:
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN problem_description TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS project_users (
@@ -85,7 +97,11 @@ def get_project(project_id: str) -> dict[str, Any] | None:
     """Return project metadata if it exists."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT project_id, created_at, updated_at FROM projects WHERE project_id = ?",
+            """
+            SELECT project_id, model_id, problem_description, created_at, updated_at
+            FROM projects
+            WHERE project_id = ?
+            """,
             (project_id,),
         ).fetchone()
         if row is None:
@@ -102,6 +118,8 @@ def get_project(project_id: str) -> dict[str, Any] | None:
         ).fetchall()
         return {
             "project_id": row["project_id"],
+            "model_id": row["model_id"],
+            "problem_description": row["problem_description"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "users": [dict(u) for u in users],
@@ -113,7 +131,13 @@ def list_projects_for_user(user_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT p.project_id, p.created_at, p.updated_at, pu.last_seen_at
+            SELECT
+                p.project_id,
+                p.model_id,
+                p.problem_description,
+                p.created_at,
+                p.updated_at,
+                pu.last_seen_at
             FROM projects p
             INNER JOIN project_users pu ON pu.project_id = p.project_id
             WHERE pu.user_id = ?
@@ -128,6 +152,8 @@ def touch_project(
     project_id: str,
     user_id: str,
     *,
+    model_id: str | None = None,
+    problem_description: str | None = None,
     create_if_missing: bool = True,
     allow_join_existing: bool = False,
 ) -> dict[str, Any]:
@@ -160,9 +186,14 @@ def touch_project(
                     "project_id": project_id,
                     "user_id": user_id,
                 }
+            model_value = (model_id or "").strip()
+            problem_value = (problem_description or "").strip()
             conn.execute(
-                "INSERT INTO projects(project_id, created_at, updated_at) VALUES (?, ?, ?)",
-                (project_id, now, now),
+                """
+                INSERT INTO projects(project_id, model_id, problem_description, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (project_id, model_value, problem_value, now, now),
             )
             created = True
             conn.execute(
@@ -185,8 +216,15 @@ def touch_project(
             if membership is not None:
                 resumed = True
                 conn.execute(
-                    "UPDATE projects SET updated_at = ? WHERE project_id = ?",
-                    (now, project_id),
+                    """
+                    UPDATE projects
+                    SET
+                        updated_at = ?,
+                        model_id = COALESCE(NULLIF(?, ''), model_id),
+                        problem_description = COALESCE(NULLIF(?, ''), problem_description)
+                    WHERE project_id = ?
+                    """,
+                    (now, (model_id or "").strip(), (problem_description or "").strip(), project_id),
                 )
                 conn.execute(
                     """
@@ -206,8 +244,15 @@ def touch_project(
                     (project_id, user_id, now, now),
                 )
                 conn.execute(
-                    "UPDATE projects SET updated_at = ? WHERE project_id = ?",
-                    (now, project_id),
+                    """
+                    UPDATE projects
+                    SET
+                        updated_at = ?,
+                        model_id = COALESCE(NULLIF(?, ''), model_id),
+                        problem_description = COALESCE(NULLIF(?, ''), problem_description)
+                    WHERE project_id = ?
+                    """,
+                    (now, (model_id or "").strip(), (problem_description or "").strip(), project_id),
                 )
             else:
                 return {
