@@ -9,3 +9,5 @@ docs
 .cursor/
 Data/
 .data/
+parsed/
+extracted/

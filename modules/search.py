@@ -129,6 +129,9 @@ def _rerank(query: str, objects, top_n: int = 3) -> dict:
             "rank": rank,
             "rerank_score": float(result.relevance_score),
             "hybrid_score": float(hybrid_score) if hybrid_score is not None else None,
+            "model_id": props.get("model_id", ""),
+            "manual_name": props.get("manual_name", ""),
+            "page_number": props.get("page_number"),
             "raw_text": props.get("raw_text", ""),
             "tables": props.get("tables"),
         })

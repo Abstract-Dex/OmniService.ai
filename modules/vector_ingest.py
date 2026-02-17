@@ -35,6 +35,7 @@ co = cohere.ClientV2()
 COLLECTION_NAME = "service_manuals"
 COLLECTION_PROPERTIES = [
     Property(name="page_number", data_type=DataType.INT),
+    Property(name="manual_name", data_type=DataType.TEXT),
     Property(name="has_tables", data_type=DataType.BOOL),
     Property(name="raw_text", data_type=DataType.TEXT),
     Property(name="tables", data_type=DataType.TEXT),
@@ -51,7 +52,8 @@ def get_weaviate_client():
       - WEAVIATE_URL (or WEAVIATE_REST_ENDPOINT)
       - WEAVIATE_API_KEY
     """
-    weaviate_url = os.getenv("WEAVIATE_URL") or os.getenv("WEAVIATE_REST_ENDPOINT")
+    weaviate_url = os.getenv("WEAVIATE_URL") or os.getenv(
+        "WEAVIATE_REST_ENDPOINT")
     weaviate_api_key = os.getenv("WEAVIATE_API_KEY")
 
     if weaviate_url:
@@ -112,13 +114,17 @@ def extract_texts_from_json(page_obj):
     manual_json = json.loads(page_obj) if isinstance(
         page_obj, str) else page_obj
 
+    source_name = os.path.basename(manual_json["source"]["path"])
+    model_name = os.path.splitext(source_name)[0]
+
     for page in manual_json["pages"]:
         # Format required by Cohere embed-v4.0
         manual_content = [{"type": "text", "text": page["raw_text"]}]
 
         # Derive model_id from the source file name (e.g. "Model-CPB050JC-S-0-EV")
         metadata.append({
-            "model_id": manual_json["source"]["path"].split("/")[-1].split(".")[0],
+            "model_id": model_name,
+            "manual_name": source_name,
             "page_number": page["page_number"],
             "has_tables": page["has_tables"],
             "raw_text": page["raw_text"],

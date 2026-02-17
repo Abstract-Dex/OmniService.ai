@@ -15,11 +15,13 @@ from __future__ import annotations
 import os
 import logging
 import asyncio
+from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
@@ -43,6 +45,7 @@ if os.getenv("LANGCHAIN_API_KEY"):
 
 
 logger = logging.getLogger("omniservice.api")
+MANUALS_ROOT = os.getenv("MANUALS_ROOT", "/data/manuals")
 
 
 # ── App & graph ──────────────────────────────────────────────────────
@@ -78,6 +81,66 @@ class ChatRequest(BaseModel):
 
 
 # ── Endpoint ─────────────────────────────────────────────────────────
+def _extract_references_from_state(values: dict) -> list[dict[str, str | int | float | None]]:
+    """Extract compact PDF references from latest vector retrieval results."""
+    tool_results = values.get(
+        "tool_results", {}) if isinstance(values, dict) else {}
+    vector_results = tool_results.get(
+        "vector_results", {}) if isinstance(tool_results, dict) else {}
+    ranked = vector_results.get("results", []) if isinstance(
+        vector_results, dict) else []
+
+    references: list[dict[str, str | int | float | None]] = []
+    seen: set[tuple[str, int | None]] = set()
+    for item in ranked:
+        if not isinstance(item, dict):
+            continue
+        manual_name = str(item.get("manual_name", "") or "")
+        page_number = item.get("page_number")
+        page_value = page_number if isinstance(page_number, int) else None
+        key = (manual_name, page_value)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rank_raw = item.get("rank")
+        references.append(
+            {
+                "manual_name": manual_name,
+                "manual_url": f"/api/manuals/{quote(manual_name)}" if manual_name else "",
+                "page_number": page_value,
+                "model_id": str(item.get("model_id", "") or ""),
+                "rank": int(rank_raw) if isinstance(rank_raw, int) else None,
+                "rerank_score": float(item.get("rerank_score")) if item.get("rerank_score") is not None else None,
+            }
+        )
+    return references
+
+
+@app.get("/api/manuals/{manual_name}")
+async def get_manual(manual_name: str):
+    """Serve PDF manuals from MANUALS_ROOT for frontend document viewer."""
+    root = Path(MANUALS_ROOT).resolve()
+    safe_name = Path(manual_name).name
+    if safe_name != manual_name:
+        raise HTTPException(status_code=400, detail="Invalid manual_name")
+    if not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400, detail="Only PDF manuals are supported")
+
+    manual_path = (root / safe_name).resolve()
+    if root not in manual_path.parents:
+        raise HTTPException(status_code=400, detail="Invalid manual path")
+    if not manual_path.exists():
+        raise HTTPException(
+            status_code=404, detail=f"Manual '{safe_name}' not found")
+
+    return FileResponse(
+        path=str(manual_path),
+        media_type="application/pdf",
+        filename=safe_name,
+    )
+
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request):
@@ -186,6 +249,7 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
             "project_id": project_id,
             "exists": False,
             "messages": [],
+            "references": [],
             "model_id": "",
             "problem_description": "",
             "users": [],
@@ -208,6 +272,7 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
                 {"role": "assistant", "content": str(msg.content)})
 
     latest_project = get_project(project_id) or access
+    references = _extract_references_from_state(values)
     return {
         "project_id": project_id,
         "exists": True,
@@ -217,6 +282,7 @@ async def project_history(project_id: str, user_id: str = Query(..., min_length=
                 "problem_description", "")
         ),
         "messages": serialized,
+        "references": references,
         "users": [u["user_id"] for u in latest_project.get("users", [])],
     }
 
