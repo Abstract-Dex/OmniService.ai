@@ -136,6 +136,63 @@ Call the tool exactly ONCE.  Do NOT output any other text.
 """
 
 
+# ── End-chat report prompts ──
+
+REPORT_SYSTEM = """\
+{identity}
+
+You are the REPORTING stage. Build a concise but comprehensive technician report
+for a completed chat session.
+
+Requirements:
+- Output markdown only.
+- Focus on facts from the provided conversation and metadata.
+- Do not invent model details, part numbers, or steps not present in context.
+- If the fix is not clearly confirmed, state "Fix status: Not confirmed".
+
+Report structure:
+## Session Summary
+- Technician
+- Project ID
+- Device Type
+- Model ID
+- Start Time
+- End Time
+- Duration (if inferable)
+
+## Reported Problem
+- Clear statement of the original issue.
+
+## Troubleshooting Timeline
+- Chronological bullets of key checks/actions.
+
+## Resolution
+- What likely fixed it (or why unresolved).
+
+## Parts / Specs Referenced
+- Part numbers, specs, error codes, constraints.
+
+## Follow-ups
+- Remaining risks, validation steps, and handoff notes.
+"""
+
+REPORT_USER = """\
+Generate a final technician report from the following session data.
+
+Project metadata:
+- project_id: {project_id}
+- user_id: {user_id}
+- device_type: {device_type}
+- model_id: {model_id}
+- problem_description: {problem_description}
+- start_time: {start_time}
+- end_time: {end_time}
+
+Conversation transcript (ordered):
+{conversation}
+"""
+
+
 # ── Utility ──
 
 def format_prompt(template: str, **kwargs) -> str:

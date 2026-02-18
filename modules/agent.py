@@ -39,6 +39,8 @@ from __future__ import annotations
 from modules.template import (
     PLANNER_SYSTEM,
     PLANNER_USER,
+    REPORT_SYSTEM,
+    REPORT_USER,
     SYNTHESIZER_SYSTEM,
     SYNTHESIZER_CONTEXT,
     SYNTHESIZER_PREFERENCES_SECTION,
@@ -315,7 +317,8 @@ def synthesizer_node(state: AgentState) -> dict:
     if user_preferences:
         preferences_section = format_prompt(
             SYNTHESIZER_PREFERENCES_SECTION,
-            user_preferences=json.dumps(user_preferences, indent=2, default=str),
+            user_preferences=json.dumps(
+                user_preferences, indent=2, default=str),
         )
     else:
         preferences_section = ""
@@ -386,7 +389,8 @@ def build_graph(checkpointer=None):
     global _SQLITE_CHECKPOINTER_CM, _SQLITE_CHECKPOINTER
 
     if checkpointer is None:
-        checkpoint_path = os.getenv("LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
+        checkpoint_path = os.getenv(
+            "LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
         checkpoint_dir = os.path.dirname(checkpoint_path)
         if checkpoint_dir:
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -395,7 +399,8 @@ def build_graph(checkpointer=None):
             # from_conn_string returns a context manager; keep it open
             # for the process lifetime so the saver remains usable.
             if _SQLITE_CHECKPOINTER is None:
-                _SQLITE_CHECKPOINTER_CM = SqliteSaver.from_conn_string(checkpoint_path)
+                _SQLITE_CHECKPOINTER_CM = SqliteSaver.from_conn_string(
+                    checkpoint_path)
                 _SQLITE_CHECKPOINTER = _SQLITE_CHECKPOINTER_CM.__enter__()
             checkpointer = _SQLITE_CHECKPOINTER
         else:
@@ -434,7 +439,8 @@ async def get_async_graph(checkpointer=None):
         return _ASYNC_GRAPH
 
     if checkpointer is None:
-        checkpoint_path = os.getenv("LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
+        checkpoint_path = os.getenv(
+            "LANGGRAPH_CHECKPOINT_DB", ".data/checkpoints.db")
         checkpoint_dir = os.path.dirname(checkpoint_path)
         if checkpoint_dir:
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -504,6 +510,64 @@ def _make_config(
             "web_search": web_search,
         },
     }
+
+
+def generate_chat_report(
+    *,
+    project_id: str,
+    user_id: str,
+    device_type: str,
+    model_id: str,
+    problem_description: str,
+    start_time: str,
+    end_time: str,
+    messages: list[dict[str, str]],
+) -> str:
+    """Generate an end-of-chat markdown report from session context."""
+    llm = _get_llm()
+
+    conversation_lines: list[str] = []
+    for msg in messages:
+        role = (msg.get("role", "") or "unknown").strip().lower()
+        content = (msg.get("content", "") or "").strip()
+        if not content:
+            continue
+        speaker = "Technician" if role == "user" else "Assistant"
+        conversation_lines.append(f"- {speaker}: {content}")
+
+    conversation = "\n".join(
+        conversation_lines) if conversation_lines else "- No conversation captured."
+
+    system = format_prompt(REPORT_SYSTEM)
+    user = format_prompt(
+        REPORT_USER,
+        project_id=project_id,
+        user_id=user_id,
+        device_type=device_type,
+        model_id=model_id,
+        problem_description=problem_description,
+        start_time=start_time,
+        end_time=end_time,
+        conversation=conversation,
+    )
+
+    response = llm.invoke(
+        [
+            SystemMessage(content=system),
+            HumanMessage(content=user),
+        ],
+        config=RunnableConfig(
+            run_name="report_llm",
+            tags=["report", "omniservice"],
+            metadata={
+                "project_id": project_id,
+                "user_id": user_id,
+                "model_id": model_id,
+            },
+        ),
+    )
+    content = response.content
+    return content if isinstance(content, str) else str(content)
 
 
 def stream_answer(

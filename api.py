@@ -25,7 +25,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
-from modules.agent import astream_answer, build_graph, get_async_graph
+from modules.agent import (
+    astream_answer,
+    build_graph,
+    generate_chat_report,
+    get_async_graph,
+)
 from modules.persistence import (
     delete_project,
     get_project,
@@ -80,6 +85,17 @@ class ChatRequest(BaseModel):
     web_search: bool = False    # user toggles "search the web" in the UI
 
 
+class ReportRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1)
+    device_type: str
+    model_number: str
+    problem_description: str
+    start_time: str
+    end_time: str
+    messages: list[Message] = Field(default_factory=list)
+
+
 # ── Endpoint ─────────────────────────────────────────────────────────
 def _extract_references_from_state(values: dict) -> list[dict[str, str | int | float | None]]:
     """Extract compact PDF references from latest vector retrieval results."""
@@ -104,6 +120,10 @@ def _extract_references_from_state(values: dict) -> list[dict[str, str | int | f
         seen.add(key)
 
         rank_raw = item.get("rank")
+        score_raw = item.get("rerank_score")
+        score_value: float | None = None
+        if isinstance(score_raw, (int, float)):
+            score_value = float(score_raw)
         references.append(
             {
                 "manual_name": manual_name,
@@ -111,7 +131,7 @@ def _extract_references_from_state(values: dict) -> list[dict[str, str | int | f
                 "page_number": page_value,
                 "model_id": str(item.get("model_id", "") or ""),
                 "rank": int(rank_raw) if isinstance(rank_raw, int) else None,
-                "rerank_score": float(item.get("rerank_score")) if item.get("rerank_score") is not None else None,
+                "rerank_score": score_value,
             }
         )
     return references
@@ -227,6 +247,67 @@ async def chat(req: ChatRequest, request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/chat/report")
+async def create_chat_report(req: ReportRequest):
+    """Generate a non-streaming markdown report for a completed chat session."""
+    access = touch_project(
+        req.project_id,
+        req.user_id,
+        create_if_missing=False,
+        allow_join_existing=False,
+    )
+    status = access.get("status")
+    if status == "not_found":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project '{req.project_id}' not found",
+        )
+    if status == "forbidden":
+        raise HTTPException(
+            status_code=403,
+            detail=f"User '{req.user_id}' is not allowed to report on project '{req.project_id}'",
+        )
+
+    snapshot = graph.get_state({"configurable": {"thread_id": req.project_id}})
+    values = snapshot.values if getattr(snapshot, "values", None) else {}
+    persisted_messages = values.get("messages", [])
+    serialized: list[dict[str, str]] = []
+    for msg in persisted_messages:
+        if isinstance(msg, HumanMessage):
+            serialized.append({"role": "user", "content": str(msg.content)})
+        elif isinstance(msg, AIMessage):
+            serialized.append(
+                {"role": "assistant", "content": str(msg.content)})
+
+    input_messages = (
+        [{"role": m.role, "content": m.content} for m in req.messages]
+        if req.messages
+        else serialized
+    )
+
+    model_id = req.model_number or values.get("model_id", "")
+    problem_description = req.problem_description or values.get(
+        "problem_description", "")
+
+    report_markdown = generate_chat_report(
+        project_id=req.project_id,
+        user_id=req.user_id,
+        device_type=req.device_type,
+        model_id=model_id,
+        problem_description=problem_description,
+        start_time=req.start_time,
+        end_time=req.end_time,
+        messages=input_messages,
+    )
+
+    return {
+        "project_id": req.project_id,
+        "user_id": req.user_id,
+        "model_id": model_id,
+        "report_markdown": report_markdown,
+    }
 
 
 @app.get("/api/projects/{project_id}/history")

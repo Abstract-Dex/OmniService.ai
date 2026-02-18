@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 # Suppress harmless SSL socket warnings from the Cohere client
 warnings.filterwarnings("ignore", category=ResourceWarning)
 
