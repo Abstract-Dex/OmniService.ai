@@ -1,129 +1,78 @@
 # OmniService.ai
 
-Agentic system for HVAC/R field-service AI: ingests service manuals into a hybrid knowledge base (vector + graph) and answers technician questions via a LangGraph-powered chat API.
+Agentic HVAC/R field-service assistant. Ingest service manuals into a hybrid knowledge base (vector + graph), answer technician questions via streaming chat, persist conversations per project, and generate end-of-session reports.
 
 ---
 
-## What Has Been Done
+## What It Does
 
-### Phase 1: Knowledge Base Ingestion
-
-| Component                                         | Description                                                                                                             |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| **PDF extraction** (`modules/extract.py`)         | pdfplumber extracts raw text and tables per page → JSON                                                                 |
-| **Pydantic schemas** (`modules/scheme.py`)        | `UnifiedModel`, `Classification`, `Specification`, `SBOM`, `ConflictRules`, `Troubleshooting`                           |
-| **LLM parser** (`modules/llm_parser.py`)          | Claude Haiku parses extracted JSON → validated `UnifiedModel`, code-fence stripping                                     |
-| **Vector ingestion** (`modules/vector_ingest.py`) | Cohere embed-v4.0, Weaviate `service_manuals` collection (hybrid BM25 + vector), per-page chunks                        |
-| **Graph ingestion** (`modules/graph_store.py`)    | Neo4j nodes (Model, Component, ConflictRule, Troubleshooting), recursive sBOM, `SHARED_PART` cross-model links          |
-| **Unified pipeline** (`modules/ingest.py`)        | PDF → extract → vector ingest → LLM parse → graph ingest; skips LLM when model already in Neo4j                         |
-| **Search** (`modules/search.py`)                  | `search_knowledge_base(model_id, problem_description)` — hybrid search + Cohere rerank + Neo4j subgraph → combined JSON |
-| **Docker Compose**                                | `docker-compose-weaviate.yml`, `docker-compose-graph.yaml` for local Weaviate and Neo4j                                 |
-
-### Phase 2: Agentic Answer Generation
-
-| Component                            | Description                                                                                                                                            |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Prompts** (`modules/template.py`)  | Centralised prompts for planner and synthesizer (markdown formatting for frontend)                                                                     |
-| **Agent graph** (`modules/agent.py`) | LangGraph `[START] → planner → executor → synthesizer → [END]` with persistence, durable execution, streaming                                          |
-| **Planner node**                     | Decides which tools to call (`search_knowledge_base`, `external_search`) based on user message; frontend provides `model_id` and `problem_description` |
-| **Executor node**                    | Calls `search_knowledge_base` (and future `external_search`); side effects wrapped in `@task` for durable execution                                    |
-| **Synthesizer node**                 | Generates technician-facing answers from KB results; outputs markdown (bold, headings, lists, blockquotes)                                             |
-| **Conversation memory**              | Per `project_id` (thread) via LangGraph checkpointer; only user + assistant messages stored                                                            |
-| **API** (`api.py`)                   | FastAPI `POST /api/chat` — SSE streaming, CORS, client-disconnect detection (stop button)                                                              |
+- **Ingest PDF manuals** → Weaviate (vector) + Neo4j (graph)
+- **Chat API** → LangGraph agent streams answers from KB + optional web search
+- **Project persistence** → Per-`project_id` conversation state, technician handoff
+- **View sources** → Citations (manual + page) + serve PDFs for inline viewer
+- **End chat report** → LLM-generated markdown summary of problem, troubleshooting, resolution
 
 ---
 
-## Project Structure
+## Architecture
 
 ```
-OmniService.ai/
-├── api.py                    # FastAPI server — POST /api/chat
-├── modules/
-│   ├── __init__.py
-│   ├── scheme.py             # Pydantic schemas
-│   ├── extract.py             # PDF → JSON (pdfplumber)
-│   ├── llm_parser.py          # JSON → UnifiedModel (Claude Haiku)
-│   ├── vector_ingest.py       # Cohere + Weaviate ingestion
-│   ├── graph_store.py         # Neo4j ingestion + queries
-│   ├── ingest.py              # Full ingestion pipeline
-│   ├── search.py              # search_knowledge_base()
-│   ├── template.py            # Agent prompts (planner, synthesizer)
-│   └── agent.py               # LangGraph graph (planner, executor, synthesizer)
-├── docker-compose-weaviate.yml
-├── docker-compose-graph.yaml
-├── test.ipynb                # Demo notebook
-└── pyproject.toml
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FastAPI (api.py)                                                           │
+│  POST /api/chat         → stream answer                                     │
+│  POST /api/chat/report  → end-chat markdown report                          │
+│  GET  /api/projects     → list projects for user                            │
+│  GET  /api/projects/{id}/history → messages + references                    │
+│  GET  /api/manuals/{name} → serve PDF                                       │
+│  DELETE /api/projects/{id} → delete project (user_id required)              │
+└─────────────────────────────────────────────────────────────────────────────┘
+        │                    │                          │
+        ▼                    ▼                          ▼
+┌──────────────┐   ┌───────────────────┐   ┌──────────────────────┐
+│  persistence │   │  LangGraph Agent  │   │  search_knowledge_   │
+│  (SQLite)    │   │  (modules/agent)  │   │  base (Weaviate +    │
+│  projects,   │   │  planner→executor │   │  Neo4j + Cohere)     │
+│  users,      │   │  →web_search?     │   │                      │
+│  preferences │   │  →synthesizer     │   └──────────────────────┘
+└──────────────┘   └───────────────────┘
+        │                    │                          │
+        │                    │                          │
+        ▼                    ▼                          ▼
+┌──────────────┐   ┌───────────────────┐   ┌─────────────────────┐
+│  app_state.  │   │  checkpoints.db   │   │  Weaviate (vector)  │
+│  db          │   │  (LangGraph       │   │  Neo4j (graph)      │
+│              │   │  thread state)    │   │  Cohere             │
+└──────────────┘   └───────────────────┘   └─────────────────────┘
+```
+
+### Agent Flow
+
+```
+START → planner → executor ─┬─ (web_search=true)  → web_search → synthesizer → END
+                           └─ (web_search=false) → synthesizer → END
 ```
 
 ---
 
-## Running the API
+## File Roles
 
-### 1. Start infrastructure
-
-```bash
-docker compose -f docker-compose-weaviate.yml up -d
-docker compose -f docker-compose-graph.yaml up -d
-```
-
-### 2. Set environment variables
-
-Create a `.env` with:
-
-- `ANTHROPIC_API_KEY` — for the agent LLM
-- `COHERE_API_KEY` — for embeddings and rerank
-- `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` (optional; defaults: `neo4j://localhost:7687`, `neo4j`, `omniservice`)
-
-### 3. Run the API server
-
-```bash
-uvicorn api:app --reload --port 8000
-```
-
-- **Swagger UI:** http://localhost:8000/docs
-- **Endpoint:** `POST http://localhost:8000/api/chat`
-
-### 4. Request format
-
-```json
-{
-  "project_id": "abc123",
-  "device_type": "Refrigeration Unit",
-  "model_number": "CPB050JC-S-0-EV",
-  "problem_description": "Unit not cooling properly, compressor cycling on and off",
-  "messages": [
-    {
-      "role": "user",
-      "content": "I'm having an issue with my Refrigeration Unit..."
-    },
-    { "role": "assistant", "content": "Based on your device..." },
-    { "role": "user", "content": "I'm seeing error code E3" }
-  ]
-}
-```
-
-- The last `user` message is treated as the current question.
-- `project_id` is used as LangGraph `thread_id` (conversation persistence).
-- `model_number` maps to the knowledge-base `model_id`.
-
-### 5. Response
-
-Streamed via **Server-Sent Events** (`text/event-stream`): tokens streamed one-by-one, ending with `[DONE]`. The frontend can abort the request (e.g. stop button) and the server stops generating.
+| File                         | Role                                                                                            |
+| ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| **api.py**                   | FastAPI app, CORS, chat/report/projects/manuals/delete endpoints                                |
+| **modules/agent.py**         | LangGraph graph (planner, executor, web_search, synthesizer), report generator                  |
+| **modules/template.py**      | All LLM prompts (planner, synthesizer, web_search, report)                                      |
+| **modules/search.py**        | `search_knowledge_base()` — Weaviate hybrid + Cohere rerank + Neo4j subgraph; `web_search_tool` |
+| **modules/persistence.py**   | SQLite: projects, project_users, user_preferences; handoff, delete                              |
+| **modules/vector_ingest.py** | Cohere embed → Weaviate `service_manuals` (page chunks, manual_name)                            |
+| **modules/graph_store.py**   | Neo4j: Model, Component, ConflictRule, Troubleshooting; `ingest_sbom()`                         |
+| **modules/ingest.py**        | Pipeline: PDF → extract → vector_ingest → llm_parser → graph_store                              |
+| **modules/extract.py**       | pdfplumber: PDF → JSON (raw_text, tables per page)                                              |
+| **modules/llm_parser.py**    | Claude Haiku: raw JSON → UnifiedModel (sBOM, specs, rules)                                      |
+| **modules/scheme.py**        | Pydantic schemas for ingestion (UnifiedModel, etc.)                                             |
 
 ---
-
-## Ingestion Pipeline
-
-To ingest PDF manuals into the knowledge base:
-
-```bash
-python -m modules.ingest -i Data/
-```
-
-Expects `Data/*.pdf`. Outputs go to `Data/extracted/` and `Data/parsed/`, then into Weaviate and Neo4j.
-
----
-
-## Dependencies
-
-See `pyproject.toml`. Key: FastAPI, uvicorn, langgraph, langchain-anthropic, langchain-core, cohere, weaviate-client, neo4j, anthropic, pdfplumber, pydantic.
