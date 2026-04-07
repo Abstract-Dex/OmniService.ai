@@ -1,12 +1,9 @@
 """
-Knowledge base search — queries both Weaviate (vector) and Neo4j (graph)
-and returns a single combined JSON payload.
+Knowledge base search — queries Weaviate (vector) and returns a JSON payload.
 
 Flow:
   1. Hybrid search (BM25 + vector) on Weaviate, filtered by model_id
   2. Rerank results via Cohere rerank-v4.0-pro to get top 3
-  3. Fetch the model's structured subgraph from Neo4j
-  4. Combine both into one JSON-safe dict
 
 Usage:
     from modules.search import search_knowledge_base
@@ -19,8 +16,8 @@ import weaviate
 import cohere
 from weaviate.classes.config import Configure
 from weaviate.classes.query import MetadataQuery, Filter
-from neo4j import Query
-from modules.graph_store import get_driver, get_session_kwargs
+# from neo4j import Query
+# from modules.graph_store import get_driver, get_session_kwargs
 from modules.vector_ingest import COLLECTION_NAME, COLLECTION_PROPERTIES, get_weaviate_client
 from langchain_community.tools import DuckDuckGoSearchRun
 from langsmith import traceable  # type: ignore[import-untyped]
@@ -139,48 +136,46 @@ def _rerank(query: str, objects, top_n: int = 3) -> dict:
     return {"results": results}
 
 
-# ── Graph search (Neo4j) ──
+# ── Graph search (Neo4j) — disabled to reduce cost and latency ──
 
-@traceable(name="neo4j_graph_fetch", tags=["graph_search", "neo4j", "omniservice"])
-def _fetch_model_graph(model_id: str, max_hops: int = 3) -> dict:
-    """
-    Fetch the full subgraph for a model from Neo4j.
-
-    Returns a JSON-safe dict with:
-      - model_id
-      - nodes: list of {id, labels, properties}
-    """
-    # Build the Cypher query with the hop depth baked in
-    # (max_hops is an int we control, not user input — safe to interpolate)
-    cypher = Query(
-        "MATCH p=(m:Model {model_id: $model_id})-[*0.."
-        + str(max_hops)
-        + "]-(n) RETURN p"
-    )
-
-    driver = get_driver()
-    try:
-        with driver.session(**get_session_kwargs()) as session:
-            result = session.run(cypher, model_id=model_id)
-
-            node_map = {}
-            for record in result:
-                path = record["p"]
-                for node in path.nodes:
-                    nid = node.element_id
-                    if nid not in node_map:
-                        node_map[nid] = {
-                            "id": nid,
-                            "labels": sorted(list(node.labels)),
-                            "properties": dict(node.items()),
-                        }
-
-            return {
-                "model_id": model_id,
-                "nodes": list(node_map.values()),
-            }
-    finally:
-        driver.close()
+# @traceable(name="neo4j_graph_fetch", tags=["graph_search", "neo4j", "omniservice"])
+# def _fetch_model_graph(model_id: str, max_hops: int = 3) -> dict:
+#     """
+#     Fetch the full subgraph for a model from Neo4j.
+#
+#     Returns a JSON-safe dict with:
+#       - model_id
+#       - nodes: list of {id, labels, properties}
+#     """
+#     cypher = Query(
+#         "MATCH p=(m:Model {model_id: $model_id})-[*0.."
+#         + str(max_hops)
+#         + "]-(n) RETURN p"
+#     )
+#
+#     driver = get_driver()
+#     try:
+#         with driver.session(**get_session_kwargs()) as session:
+#             result = session.run(cypher, model_id=model_id)
+#
+#             node_map = {}
+#             for record in result:
+#                 path = record["p"]
+#                 for node in path.nodes:
+#                     nid = node.element_id
+#                     if nid not in node_map:
+#                         node_map[nid] = {
+#                             "id": nid,
+#                             "labels": sorted(list(node.labels)),
+#                             "properties": dict(node.items()),
+#                         }
+#
+#             return {
+#                 "model_id": model_id,
+#                 "nodes": list(node_map.values()),
+#             }
+#     finally:
+#         driver.close()
 
 
 # ── Combined search ──
@@ -193,13 +188,11 @@ def search_knowledge_base(
     rerank_top_n: int = 3,
 ) -> dict:
     """
-    Query both Weaviate and Neo4j for a given model and problem description.
+    Query Weaviate for a given model and problem description.
 
     Steps:
       1. Hybrid search on Weaviate (filtered by model_id)
       2. Rerank to get the top N most relevant pages
-      3. Fetch the model's structured graph from Neo4j
-      4. Combine into a single JSON-safe payload
 
     Args:
         model_id:            The model to search for (e.g. "CPB050JC-S-0-EV").
@@ -213,22 +206,20 @@ def search_knowledge_base(
             "model_id": "...",
             "query": "...",
             "vector_results": { "results": [...] },
-            "graph_context": { "model_id": "...", "nodes": [...] }
         }
     """
     # Vector DB: hybrid search + rerank
     objects = _hybrid_search(model_id, problem_description, limit=vector_limit)
     vector_results = _rerank(problem_description, objects, top_n=rerank_top_n)
 
-    # Graph DB: structured model data
-    graph_context = _fetch_model_graph(model_id)
+    # Graph DB: structured model data — disabled to reduce cost and latency
+    # graph_context = _fetch_model_graph(model_id)
 
-    # Combine into one payload
     payload = {
         "model_id": model_id,
         "query": problem_description,
         "vector_results": vector_results,
-        "graph_context": graph_context,
+        # "graph_context": graph_context,
     }
 
     return payload

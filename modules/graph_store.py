@@ -23,9 +23,11 @@ from modules.scheme import UnifiedModel
 load_dotenv()
 
 # Neo4j connection settings (supports both internal + downloaded Aura names)
-NEO4J_URI = os.getenv("NEO4J_URI") or os.getenv("NEO4J_URL") or "neo4j://localhost:7687"
+NEO4J_URI = os.getenv("NEO4J_URI") or os.getenv(
+    "NEO4J_URL") or "neo4j://localhost:7687"
 NEO4J_USER = os.getenv("NEO4J_USER") or os.getenv("neo4j_username") or "neo4j"
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD") or os.getenv("neo4j_password") or "omniservice"
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD") or os.getenv(
+    "neo4j_password") or "omniservice"
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE") or os.getenv("neo4j_database")
 
 

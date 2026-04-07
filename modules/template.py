@@ -60,7 +60,7 @@ SYNTHESIZER_SYSTEM = """\
 
 You are the SYNTHESIZER stage.  You receive:
 1. The technician's original question (in the conversation history).
-2. Knowledge-base search results (vector similarity + graph context).
+2. Knowledge-base search results (vector similarity).
 
 Your job is to produce a clear, actionable answer for a field technician.
 
@@ -89,12 +89,15 @@ Below are the knowledge-base results for model "{model_id}".
 ── Vector search results (ranked by relevance) ──
 {vector_results}
 
-── Graph context (structured model data) ──
-{graph_context}
-
 {web_section}
 Using the above context, answer the technician's question.
 """
+
+# Graph context section — disabled (vector DB is the sole knowledge base).
+# SYNTHESIZER_GRAPH_SECTION = """\
+# ── Graph context (structured model data) ──
+# {graph_context}
+# """
 
 # Injected into SYNTHESIZER_CONTEXT when user preferences are available
 SYNTHESIZER_PREFERENCES_SECTION = """\

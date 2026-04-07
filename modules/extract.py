@@ -6,7 +6,7 @@ Takes a PDF file path and returns a JSON string containing:
   - per-page data: raw_text, tables (list of dicts), has_tables flag
 
 This is the first step in the ingestion pipeline:
-    extract (this) -> vector_ingest -> llm_parser -> graph_store
+    extract (this) -> vector_ingest
 """
 
 import pdfplumber

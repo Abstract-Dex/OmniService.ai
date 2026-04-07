@@ -124,7 +124,7 @@ class AgentState(TypedDict):
 
 @task
 def _kb_search_task(model_id: str, problem_description: str) -> dict:
-    """Search Weaviate + Neo4j.  Wrapped in @task so it is NOT re-executed
+    """Search Weaviate (vector DB).  Wrapped in @task so it is NOT re-executed
     when a workflow resumes from a later checkpoint."""
     return search_knowledge_base(model_id, problem_description)
 
@@ -299,9 +299,10 @@ def synthesizer_node(state: AgentState) -> dict:
     vector_results = json.dumps(
         tr.get("vector_results", {}), indent=2, default=str,
     )
-    graph_context = json.dumps(
-        tr.get("graph_context", {}), indent=2, default=str,
-    )
+    # Graph context disabled — vector DB is the sole knowledge base.
+    # graph_context = json.dumps(
+    #     tr.get("graph_context", {}), indent=2, default=str,
+    # )
 
     # Include web results section only when present
     web_results_raw = tr.get("web_results")
@@ -328,7 +329,6 @@ def synthesizer_node(state: AgentState) -> dict:
         model_id=state.get("model_id", "unknown"),
         preferences_section=preferences_section,
         vector_results=vector_results,
-        graph_context=graph_context,
         web_section=web_section,
     )
 
